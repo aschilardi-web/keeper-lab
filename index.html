@@ -224,6 +224,30 @@ function ThermoChart({list}){
     <div style={{fontSize:12,color:T.tm,marginTop:6,lineHeight:1.5}}>Semaine du {fmt(last.mon)} : <b style={{color:T.text}}>{last.score}/28</b>{diff!==null&&<span> · {diff<0?'▼ ':diff>0?'▲ ':'= '}{diff===0?'stable':Math.abs(diff)+' pt'+(Math.abs(diff)>1?'s':'')+' vs semaine précédente'}{diff<0?' (le stress baisse 👏)':''}</span>}</div>
   </div>;
 }
+// Défi 7 jours (une semaine = du lundi au dimanche, stocké dans la table activities)
+const DEFI=[{n:1,l:'Respiration 4-6'},{n:2,l:'Stress noté 0 → 10'},{n:3,l:'Respiration 4-6'},{n:4,l:'Stress noté 0 → 10'},{n:5,l:'Respiration 4-6'},{n:6,l:'Stress noté 0 → 10'},{n:7,l:'Match : reset après une erreur',gold:true}];
+function defiWeek(){return thMonday(Date.now()).toLocaleDateString('fr-BE');}
+function defiState(acts){var wk=defiWeek();return DEFI.map(function(x){return(acts||[]).some(function(a){return a.date===wk&&a.type==='defi-J'+x.n&&a.done!==false;});});}
+function DefiBlock({d,readOnly}){
+  var st=defiState(d.activities),cnt=st.filter(Boolean).length,full=cnt===7;
+  var toggle=async function(i){if(readOnly)return;try{var r=await sb.from('activities').upsert({date:defiWeek(),type:'defi-J'+(i+1),done:!st[i]},{onConflict:'date,type'});if(r.error)throw r.error;d.reload();}catch(e){alert("Erreur d'enregistrement, réessaie.");}};
+  return<div className="cd" style={{padding:18,marginTop:12,borderLeft:'3px solid '+(full?T.ac:T.gr)}}>
+    <div className="ey" style={{color:T.gr,marginBottom:6}}>🔥 Défi · à tester cette semaine</div>
+    <div className="display" style={{fontSize:24,marginBottom:10}}>TON DÉFI <span style={{color:T.gr}}>7 JOURS</span></div>
+    {!readOnly&&<div style={{fontSize:12,color:T.tm,lineHeight:1.6,marginBottom:12}}>
+      <div>🌙 Chaque soir : respiration 4-6, 2 minutes</div>
+      <div>🏋️ Avant chaque entraînement : note ton stress sur 10</div>
+      <div>⚽ Au prochain match : teste une routine de reset après une erreur</div>
+    </div>}
+    <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:5}}>
+      {DEFI.map(function(x,i){var on=st[i];return<button key={x.n} onClick={function(){toggle(i);}} style={{padding:'8px 2px',borderRadius:8,border:'1px solid '+(on?T.ac:x.gold?T.go:T.border),background:on?T.ac:T.bg,color:on?'#000':T.text,display:'flex',flexDirection:'column',alignItems:'center',gap:3,cursor:readOnly?'default':'pointer'}}><span style={{fontSize:13}}>{on?'✓':'☐'}</span><span className="display" style={{fontSize:15}}>J{x.n}</span></button>;})}
+    </div>
+    {!readOnly&&<div style={{fontSize:11,color:T.td,marginTop:8,lineHeight:1.5}}>{DEFI.map(function(x){return'J'+x.n+' '+x.l;}).join(' · ')}</div>}
+    <div style={{fontSize:12,color:T.tm,marginTop:8}}>{cnt} / 7 jours</div>
+    {full&&<div style={{marginTop:10,padding:12,borderRadius:10,background:T.ac,color:'#000',textAlign:'center'}}><div className="display" style={{fontSize:18}}>🎉 DÉFI 7 JOURS RÉUSSI !</div></div>}
+    {!readOnly&&<div style={{fontSize:11,color:T.td,marginTop:10,fontStyle:'italic'}}>L'objectif : connaître ton stress et l'utiliser, pas le supprimer.</div>}
+  </div>;
+}
 // API
 const API={
   async saveThermo(entry){const cur=await sb.from('settings').select('value').eq('key','thermometer').maybeSingle();if(cur.error)throw cur.error;const old=Array.isArray(cur.data&&cur.data.value)?cur.data.value:[];if(thDoneThisWeek(old))throw new Error('ALREADY');const r=await sb.from('settings').upsert({key:'thermometer',value:[entry].concat(old)},{onConflict:'key'});if(r.error)throw r.error;},
@@ -1038,6 +1062,7 @@ function PProfile({d,o}){
       {thDoneThisWeek(d.thermo)?<div style={{padding:14,borderRadius:12,border:'1px solid '+T.ac,textAlign:'center',fontSize:13,color:T.ac,fontWeight:700}}>✓ Test de la semaine fait · prochain test lundi {(function(){var n=new Date(thMonday(Date.now()).getTime()+7*864e5);return n.getDate()+'/'+(n.getMonth()+1);})()}</div>
       :<button onClick={function(){o('thermo');}} className="bp" style={{width:'100%',padding:14,borderRadius:12,fontSize:14}}>Faire le test de la semaine</button>}
     </div>
+    <DefiBlock d={d}/>
   </div>;
 }
 
@@ -1059,6 +1084,7 @@ function CDash({o,d}){
         {l.reflection&&(l.reflection.situation||l.reflection.calm||l.reflection.action)&&<div style={{fontSize:12,color:T.tm,marginTop:6,lineHeight:1.5}}>{l.reflection.situation&&<div>Stress le + fort : {l.reflection.situation}</div>}{l.reflection.calm&&<div>M'aide à me calmer : {l.reflection.calm}</div>}{l.reflection.action&&<div>À tester : {l.reflection.action}</div>}</div>}
       </div>
     </div>;})()}
+    <div style={{marginBottom:12,marginTop:-12}}><DefiBlock d={d} readOnly={true}/></div>
     {(d.thermo||[]).length>0&&<div className="cd" style={{padding:16,marginBottom:12}}><div className="ey" style={{marginBottom:8}}>🌡️ Évolution du stress, semaine par semaine</div><ThermoChart list={d.thermo}/></div>}
     <div className="cd" style={{padding:18,marginBottom:12,borderLeft:`3px solid ${T.ac}`}}>
       <div className="ey" style={{color:T.ac,marginBottom:12}}>🎯 À discuter</div>
@@ -1148,6 +1174,7 @@ function ParOv({o,d}){
     <div className="ey" style={{padding:'8px 4px'}}>Vue parent · Thiago</div>
     <div className="display" style={{fontSize:30,padding:'0 4px 20px'}}>CETTE <span style={{color:T.ac}}>SEMAINE.</span></div>
 
+    <div style={{marginTop:-12,marginBottom:12}}><DefiBlock d={d} readOnly={true}/></div>
     {nm&&<div className="cd" style={{padding:18,marginBottom:12,borderLeft:`3px solid ${T.ac}`}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <div><div className="ey" style={{color:T.ac,marginBottom:4}}>⚔️ J{nm.n}</div><div className="display" style={{fontSize:22,lineHeight:1}}>vs {nm.opp.split(' ').slice(0,3).join(' ').toUpperCase()}</div><div style={{fontSize:12,color:T.tm,marginTop:6}}>{nm.day.charAt(0).toUpperCase()+nm.day.slice(1)} {nm.date.slice(0,5)} · {nm.time} · <span style={{color:nm.loc==='EXT'?T.or:T.gr,fontWeight:700}}>{nm.loc}</span></div></div>
