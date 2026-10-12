@@ -97,6 +97,24 @@ const WS=[
   ]},
 ];
 
+// Prochain match et dates réelles de la semaine
+function smParse(dStr){var p=dStr.split('/');return new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0]));}
+function nextMatchInfo(){
+  var now=new Date(),t0=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  for(var i=0;i<SM.length;i++){var diff=Math.round((smParse(SM[i].date)-t0)/864e5);if(diff<0)continue;if(diff===0&&now.getHours()>=parseInt(SM[i].time.split(':')[0]||'0')+3)continue;return{m:SM[i],diff:diff};}
+  return null;
+}
+function lastMatchInfo(){
+  var now=new Date(),t0=new Date(now.getFullYear(),now.getMonth(),now.getDate()),last=null;
+  for(var i=0;i<SM.length;i++){if(smParse(SM[i].date)<=t0)last=SM[i];}
+  return last||(nextMatchInfo()||{}).m||null;
+}
+var DAYN={lun:'Lun',mar:'Mar',mer:'Mer',jeu:'Jeu',ven:'Ven',sam:'Sam',dim:'Dim'};
+var DAYFULL=['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
+function weekDate(i){return new Date(thMonday(Date.now()).getTime()+i*864e5);}
+function ddmm(dt){return String(dt.getDate()).padStart(2,'0')+'/'+String(dt.getMonth()+1).padStart(2,'0');}
+function shortOpp(o){return o.replace(/^(Entente|R\.|RU\.|ROS\.|S\.C\.|C\.S\.|CS|RCS\.|RFC|FC|JS)\s+/i,'');}
+
 const GL=[
   {id:'comm-tot',cat:'Communication',icon:'🗣️',phrase:'Je parle tôt et clairement.',ctx:['team','match']},
   {id:'comm-prof',cat:'Communication',icon:'🗣️',phrase:'J\'annonce les ballons dans la profondeur.',ctx:['team','match']},
@@ -143,6 +161,7 @@ function useData(){
   const [activities,setA]=useState([]);
   const [customGoals,setCG]=useState([]);
   const [thermo,setTh]=useState([]);
+  const [defiStress,setDS]=useState({});
   const [anchor,setAn]=useState(DEFAULT_ANCHOR);
   const [loading,setL]=useState(true);
   const [err,setErr]=useState(null);
@@ -156,6 +175,7 @@ function useData(){
       setJ(j.data||[]);setS(s.data||[]);setM(m.data||[]);setC(c.data||[]);
       try{const st=await sb.from('settings').select('*').eq('key','weekly_mission').maybeSingle();setMi(st.data&&st.data.value?st.data.value:{});}catch(e2){}
       try{const th=await sb.from('settings').select('*').eq('key','thermometer').maybeSingle();setTh(Array.isArray(th.data&&th.data.value)?th.data.value:[]);}catch(e6){}
+      try{const ds=await sb.from('settings').select('*').eq('key','defi_stress').maybeSingle();setDS(ds.data&&ds.data.value&&typeof ds.data.value==='object'?ds.data.value:{});}catch(e8){}
       try{const an=await sb.from('settings').select('*').eq('key','anchor').maybeSingle();setAn(an.data&&an.data.value&&an.data.value.text?an.data.value.text:DEFAULT_ANCHOR);}catch(e7){}
       try{const a=await sb.from('activities').select('*').order('date',{ascending:false});setA(a.data||[]);}catch(e3){}
       try{const cg=await sb.from('custom_goals').select('*').order('created_at',{ascending:false});setCG(cg.data||[]);}catch(e4){}
@@ -185,7 +205,7 @@ function useData(){
   const totalMin=getTotalMin(stats);
   const cleanSheets=getCleanSheets(stats);
 
-  return{thermo,anchor,journal,stats,mobility,msgs,mission,activities,customGoals,loading,err,reload:load,mobStreak,mobBest:mobility.filter(function(x){return x.done!==false}).length,totalMin,cleanSheets};
+  return{thermo,defiStress,anchor,journal,stats,mobility,msgs,mission,activities,customGoals,loading,err,reload:load,mobStreak,mobBest:mobility.filter(function(x){return x.done!==false}).length,totalMin,cleanSheets};
 }
 
 // Thermomètre de match + phrase d'ancrage
@@ -228,102 +248,44 @@ function ThermoChart({list}){
 const DEFI=[{n:1,l:'Respiration 4-6'},{n:2,l:'Stress noté 0 → 10'},{n:3,l:'Respiration 4-6'},{n:4,l:'Stress noté 0 → 10'},{n:5,l:'Respiration 4-6'},{n:6,l:'Stress noté 0 → 10'},{n:7,l:'Match : reset après une erreur',gold:true}];
 function defiWeek(){return thMonday(Date.now()).toLocaleDateString('fr-BE');}
 function defiState(acts){var wk=defiWeek();return DEFI.map(function(x){return(acts||[]).some(function(a){return a.date===wk&&a.type==='defi-J'+x.n&&a.done!==false;});});}
+function stressCol(v){return v>=8?T.red:v>=6?T.or:v>=4?T.go:T.gr;}
 function DefiBlock({d,readOnly}){
-  var st=defiState(d.activities),cnt=st.filter(Boolean).length,full=cnt===7;
-  var toggle=async function(i){if(readOnly)return;try{var r=await sb.from('activities').upsert({date:defiWeek(),type:'defi-J'+(i+1),done:!st[i]},{onConflict:'date,type'});if(r.error)throw r.error;d.reload();}catch(e){alert("Erreur d'enregistrement, réessaie.");}};
+  var st=defiState(d.activities),cnt=st.filter(Boolean).length,full=cnt===7,wk=defiWeek();
+  var stress=(d.defiStress&&d.defiStress[wk])||{};
+  var resets=(d.activities||[]).some(function(a){return a.date===wk&&a.type==='defi-R'&&a.done!==false;});
+  var todayN=((new Date().getDay()+6)%7)+1;
+  var _s=useState(todayN),sel=_s[0],setSel=_s[1];
+  var fail=function(){alert("Erreur d'enregistrement, réessaie.");};
+  var toggleDay=async function(n){try{var r=await sb.from('activities').upsert({date:wk,type:'defi-J'+n,done:!st[n-1]},{onConflict:'date,type'});if(r.error)throw r.error;d.reload();}catch(e){fail();}};
+  var toggleReset=async function(){try{var r=await sb.from('activities').upsert({date:wk,type:'defi-R',done:!resets},{onConflict:'date,type'});if(r.error)throw r.error;d.reload();}catch(e){fail();}};
+  var setStress=async function(n,v){try{var cur=await sb.from('settings').select('value').eq('key','defi_stress').maybeSingle();if(cur.error)throw cur.error;var all=(cur.data&&cur.data.value&&typeof cur.data.value==='object')?cur.data.value:{};var wkObj=Object.assign({},all[wk]||{});if(wkObj[n]===v)delete wkObj[n];else wkObj[n]=v;all[wk]=wkObj;var r=await sb.from('settings').upsert({key:'defi_stress',value:all},{onConflict:'key'});if(r.error)throw r.error;d.reload();}catch(e){fail();}};
+  var vals=Object.keys(stress).map(function(k){return stress[k];});
+  var avg=vals.length?Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length*10)/10:null;
+  var DN=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
   return<div className="cd" style={{padding:18,marginTop:12,borderLeft:'3px solid '+(full?T.ac:T.gr)}}>
     <div className="ey" style={{color:T.gr,marginBottom:6}}>🔥 Défi · à tester cette semaine</div>
     <div className="display" style={{fontSize:24,marginBottom:10}}>TON DÉFI <span style={{color:T.gr}}>7 JOURS</span></div>
     {!readOnly&&<div style={{fontSize:12,color:T.tm,lineHeight:1.6,marginBottom:12}}>
       <div>🌙 Chaque soir : respiration 4-6, 2 minutes</div>
-      <div>🏋️ Avant chaque entraînement : note ton stress sur 10</div>
+      <div>🏋️ Avant chaque entraînement ou match : note ton stress sur 10</div>
       <div>⚽ Au prochain match : teste une routine de reset après une erreur</div>
     </div>}
     <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:5}}>
-      {DEFI.map(function(x,i){var on=st[i];return<button key={x.n} onClick={function(){toggle(i);}} style={{padding:'8px 2px',borderRadius:8,border:'1px solid '+(on?T.ac:x.gold?T.go:T.border),background:on?T.ac:T.bg,color:on?'#000':T.text,display:'flex',flexDirection:'column',alignItems:'center',gap:3,cursor:readOnly?'default':'pointer'}}><span style={{fontSize:13}}>{on?'✓':'☐'}</span><span className="display" style={{fontSize:15}}>J{x.n}</span></button>;})}
+      {DEFI.map(function(x,i){var n=i+1,on=st[i],sv=stress[n],isSel=!readOnly&&sel===n;return<button key={n} onClick={function(){if(!readOnly)setSel(n);}} style={{padding:'7px 0',borderRadius:8,border:'1px solid '+(isSel?T.text:on?T.ac:T.border),background:on?T.ac:T.bg,color:on?'#000':T.text,display:'flex',flexDirection:'column',alignItems:'center',gap:2,cursor:readOnly?'default':'pointer'}}>
+        <span style={{fontSize:9,opacity:0.7}}>{DN[i]}</span><span className="display" style={{fontSize:15}}>J{n}</span><span style={{fontSize:10,minHeight:14,fontWeight:700,color:on?'#000':sv!=null?stressCol(sv):T.td}}>{sv!=null?sv+'/10':(on?'✓':'·')}</span></button>;})}
     </div>
-    {!readOnly&&<div style={{fontSize:11,color:T.td,marginTop:8,lineHeight:1.5}}>{DEFI.map(function(x){return'J'+x.n+' '+x.l;}).join(' · ')}</div>}
-    <div style={{fontSize:12,color:T.tm,marginTop:8}}>{cnt} / 7 jours</div>
+    {!readOnly&&<div style={{marginTop:12,padding:14,borderRadius:12,background:T.bg,border:'1px solid '+T.bs}}>
+      <div className="ds" style={{fontSize:14,marginBottom:10}}>Jour {sel} · {DN[sel-1]}</div>
+      <button onClick={function(){toggleDay(sel);}} style={{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',background:'transparent',border:'none',color:T.text,padding:'6px 0',fontSize:14}}><span style={{width:22,height:22,borderRadius:5,border:'2px solid '+T.ac,background:st[sel-1]?T.ac:'transparent',color:'#000',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{st[sel-1]?'✓':''}</span>🌙 Respiration 4-6 faite ce soir</button>
+      <div style={{fontSize:13,margin:'12px 0 8px'}}>🏋️ Mon stress avant l'entraînement / le match <span style={{color:T.td}}>(0 = zéro, 10 = max)</span></div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:5}}>
+        {[0,1,2,3,4,5,6,7,8,9,10].map(function(v){var on=stress[sel]===v;return<button key={v} onClick={function(){setStress(sel,v);}} style={{padding:'10px 0',borderRadius:8,border:'1px solid '+(on?stressCol(v):T.border),background:on?stressCol(v):'transparent',color:on?'#000':T.text,fontWeight:700,fontSize:14}}>{v}</button>;})}
+      </div>
+      <button onClick={toggleReset} style={{display:'flex',alignItems:'center',gap:10,width:'100%',textAlign:'left',background:'transparent',border:'none',color:T.text,padding:'12px 0 2px',fontSize:14}}><span style={{width:22,height:22,borderRadius:5,border:'2px solid '+T.go,background:resets?T.go:'transparent',color:'#000',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{resets?'✓':''}</span>⚽ J'ai testé ma routine de reset au match</button>
+    </div>}
+    <div style={{fontSize:12,color:T.tm,marginTop:10,lineHeight:1.6}}>🌙 {cnt} / 7 soirs{avg!==null&&<span> · 🏋️ stress moyen {avg}/10</span>}{resets&&<span> · ⚽ reset testé</span>}</div>
     {full&&<div style={{marginTop:10,padding:12,borderRadius:10,background:T.ac,color:'#000',textAlign:'center'}}><div className="display" style={{fontSize:18}}>🎉 DÉFI 7 JOURS RÉUSSI !</div></div>}
     {!readOnly&&<div style={{fontSize:11,color:T.td,marginTop:10,fontStyle:'italic'}}>L'objectif : connaître ton stress et l'utiliser, pas le supprimer.</div>}
-  </div>;
-}
-// Série, records et badges (calculés à partir des données existantes, rien n'est écrit en base)
-function frDate(str){var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str||'');return m?new Date(+m[3],+m[2]-1,+m[1]).getTime():null;}
-function hlWeeksActive(d){
-  var set={};var add=function(ts){if(ts==null||isNaN(ts))return;set[thMonday(ts).getTime()]=1;};
-  (d.journal||[]).forEach(function(j){add(j.created_at?new Date(j.created_at).getTime():frDate(j.date));});
-  (d.stats||[]).forEach(function(r){add(r.created_at?new Date(r.created_at).getTime():frDate(r.date));});
-  (d.mobility||[]).forEach(function(m){if(m.done!==false)add(frDate(m.date));});
-  (d.thermo||[]).forEach(function(t){add(t.ts);});
-  (d.activities||[]).forEach(function(a){if(/^defi-J/.test(a.type)&&a.done!==false)add(frDate(a.date));});
-  return set;
-}
-function hlStreak(d){var set=hlWeeksActive(d);var cur=thMonday(Date.now());if(!set[cur.getTime()])cur=new Date(cur.getTime()-7*864e5);var n=0;while(set[cur.getTime()]){n++;cur=new Date(cur.getTime()-7*864e5);}return n;}
-function hlDefiWins(d){var by={};(d.activities||[]).forEach(function(a){if(/^defi-J/.test(a.type)&&a.done!==false)by[a.date]=(by[a.date]||0)+1;});return Object.keys(by).filter(function(k){return by[k]>=7;}).length;}
-function hlProgress(d){
-  var rows=d.stats||[];if(rows.length<4)return null;
-  var best=null;
-  SC.forEach(function(c){var pct=function(sub){var ok=0,t=0;sub.forEach(function(r){ok+=r[c.id+'_ok']||0;t+=r[c.id+'_total']||0;});return t>=c.min?ok/t*100:null;};
-    var a=pct(rows.slice(0,3)),b=pct(rows.slice(-3));
-    if(a!=null&&b!=null&&b-a>0&&(!best||b-a>best.gain))best={c:c,gain:Math.round(b-a),from:Math.round(a),to:Math.round(b)};});
-  return best;
-}
-function hlRecords(d){
-  var out=[];
-  SC.forEach(function(c){var best=null;(d.stats||[]).forEach(function(r){var t=r[c.id+'_total']||0;if(t<3)return;var p=(r[c.id+'_ok']||0)/t*100;if(!best||p>best.p)best={p:p,name:r.match_name};});if(best)out.push({c:c,p:Math.round(best.p),name:best.name});});
-  return out;
-}
-function hlBadges(d){
-  var st=d.stats||[],jn=d.journal||[],cs=d.cleanSheets||0;
-  var mob=(d.mobility||[]).filter(function(m){return m.done!==false;}).length;
-  var th=thWeekly(d.thermo),streak=hlStreak(d),wins=hlDefiWins(d);
-  var calm=th.length>=2&&th[th.length-1].score<th[0].score;
-  return[
-    {i:'🧤',n:'Premier match',h:'Enregistre un premier match',ok:st.length>=1},
-    {i:'🛡️',n:'Premier clean sheet',h:'Termine un match sans encaisser',ok:cs>=1},
-    {i:'🏰',n:'Forteresse',h:'3 clean sheets',ok:cs>=3},
-    {i:'⚔️',n:'Habitué',h:'5 matchs joués',ok:st.length>=5},
-    {i:'📓',n:'Premier débrief',h:'Fais ton premier débrief',ok:jn.length>=1},
-    {i:'📚',n:'Esprit de gardien',h:'10 débriefs',ok:jn.length>=10},
-    {i:'🧘',n:'Souple',h:'7 jours de mobilité',ok:mob>=7},
-    {i:'🌡️',n:'Je me connais',h:'Premier thermomètre de match',ok:th.length>=1},
-    {i:'🎯',n:'Régulier',h:'4 semaines de thermomètre',ok:th.length>=4},
-    {i:'😌',n:'Plus serein',h:'Un score de stress plus bas qu\'au départ',ok:calm},
-    {i:'🔥',n:'Défi relevé',h:'Réussis le défi 7 jours',ok:wins>=1},
-    {i:'📆',n:'Série de 3',h:'3 semaines d\'affilée avec de l\'activité',ok:streak>=3},
-    {i:'🚀',n:'Série de 6',h:'6 semaines d\'affilée avec de l\'activité',ok:streak>=6}
-  ];
-}
-function ProgHighlights({d}){
-  var streak=hlStreak(d),pr=hlProgress(d),rec=hlRecords(d),bd=hlBadges(d),got=bd.filter(function(b){return b.ok;}).length;
-  return<div style={{marginBottom:16}}>
-    <div className="cd" style={{padding:18,marginBottom:10,borderLeft:'3px solid '+T.or}}>
-      <div style={{display:'flex',alignItems:'center',gap:14}}>
-        <div className="display" style={{fontSize:44,lineHeight:1,color:T.or}}>🔥{streak}</div>
-        <div><div className="ds" style={{fontSize:15}}>{streak===0?'Démarre ta série':streak===1?'semaine d\'affilée':'semaines d\'affilée'}</div><div style={{fontSize:12,color:T.tm,marginTop:2,lineHeight:1.4}}>Une semaine compte dès que tu fais une séance, un débrief, la mobilité, le test ou le défi.</div></div>
-      </div>
-    </div>
-    {pr?<div className="cd" style={{padding:18,marginBottom:10,borderLeft:'3px solid '+T.ac}}>
-      <div className="ey" style={{color:T.ac,marginBottom:6}}>📈 Ta plus belle progression</div>
-      <div className="display" style={{fontSize:22,lineHeight:1.15}}>{pr.c.icon} {pr.c.label}</div>
-      <div style={{fontSize:14,marginTop:6}}><b style={{color:T.ac}}>+{pr.gain} points</b> : de {pr.from} % à {pr.to} % entre tes premiers et tes derniers matchs.</div>
-    </div>:<div className="cd" style={{padding:16,marginBottom:10}}><div className="ey" style={{marginBottom:4}}>📈 Ta progression</div><div style={{fontSize:13,color:T.tm,lineHeight:1.5}}>Ta plus belle progression s'affichera ici après quelques matchs enregistrés.</div></div>}
-    {rec.length>0&&<div className="cd" style={{padding:16,marginBottom:10}}>
-      <div className="ey" style={{marginBottom:10}}>🏅 Mes records (un seul match)</div>
-      {rec.map(function(r,i){return<div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 0',borderTop:i>0?'1px solid '+T.bs:'none'}}>
-        <div style={{fontSize:13}}>{r.c.icon} {r.c.label}<div style={{fontSize:11,color:T.td}}>{r.name}</div></div>
-        <div className="display" style={{fontSize:22,color:T.ac}}>{r.p}%</div></div>;})}
-    </div>}
-    <div className="cd" style={{padding:16}}>
-      <div className="ey" style={{marginBottom:10}}>🎖️ Mes badges · {got} / {bd.length}</div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
-        {bd.map(function(b,i){return<div key={i} style={{padding:'12px 6px',borderRadius:12,textAlign:'center',background:b.ok?T.bg:'transparent',border:'1px solid '+(b.ok?T.ac:T.bs),opacity:b.ok?1:0.45}}>
-          <div style={{fontSize:28,filter:b.ok?'none':'grayscale(1)'}}>{b.i}</div>
-          <div style={{fontSize:11,fontWeight:700,marginTop:4,lineHeight:1.2}}>{b.n}</div>
-          <div style={{fontSize:9,color:T.td,marginTop:3,lineHeight:1.3}}>{b.ok?'✓ Débloqué':b.h}</div></div>;})}
-      </div>
-    </div>
   </div>;
 }
 // API
@@ -376,13 +338,13 @@ function App(){
       </div>
       <BNav role={role} view={view} onChange={setView}/>
 
-      {modal==='tp-team'&&<TPrepModal type="team" day="Lundi 24/08" time="17:45 → 19:00" onClose={()=>setModal(null)} d={d}/>}
-      {modal==='tp-gk'&&<TPrepModal type="gk" day="Mercredi 26/08" time="18:00 → 19:00" onClose={()=>setModal(null)} d={d}/>}
-      {modal==='tp-team-wed'&&<TPrepModal type="team" day="Mercredi 26/08" time="19:30 → 21:00" onClose={()=>setModal(null)} d={d}/>}
-      {modal==='tp-thu'&&<TPrepModal type="team" day="Jeudi 27/08" time="17:45 → 19:00" onClose={()=>setModal(null)} d={d}/>}
+      {modal==='tp-team'&&<TPrepModal type="team" day={DAYFULL[0]+" "+ddmm(weekDate(0))} time="17:45 → 19:00" onClose={()=>setModal(null)} d={d}/>}
+      {modal==='tp-gk'&&<TPrepModal type="gk" day={DAYFULL[2]+" "+ddmm(weekDate(2))} time="18:00 → 19:00" onClose={()=>setModal(null)} d={d}/>}
+      {modal==='tp-team-wed'&&<TPrepModal type="team" day={DAYFULL[2]+" "+ddmm(weekDate(2))} time="19:30 → 21:00" onClose={()=>setModal(null)} d={d}/>}
+      {modal==='tp-thu'&&<TPrepModal type="team" day={DAYFULL[3]+" "+ddmm(weekDate(3))} time="17:45 → 19:00" onClose={()=>setModal(null)} d={d}/>}
       {modal==='t-debrief'&&<DebriefModal type="team" title="Entraînement" onClose={()=>setModal(null)} reload={d.reload} d={d}/>}
       {modal==='match-prep'&&<MatchPrep onClose={()=>setModal(null)} d={d}/>}
-      {modal==='match-debrief'&&<DebriefModal type="match" title="Match" subtitle="J1" onClose={()=>setModal(null)} reload={d.reload} d={d}/>}
+      {modal==='match-debrief'&&<DebriefModal type="match" title="Match" subtitle={(function(){var m=lastMatchInfo();return m?"J"+m.n+" vs "+m.opp:"";})()} onClose={()=>setModal(null)} reload={d.reload} d={d}/>}
       {modal==='mobility'&&<MobilityM onClose={()=>setModal(null)} d={d}/>}
       {modal==='routine-match'&&<RoutineModal type="match" anchor={d.anchor} onClose={()=>setModal(null)}/>}
       {modal==='routine-training'&&<RoutineModal type="training" anchor={d.anchor} onClose={()=>setModal(null)}/>}
@@ -660,12 +622,43 @@ function PHome({o,d}){
 // ============================================================
 // PLANNING — with CV Academy + mobility every evening
 // ============================================================
-function PPlanning({o,d}){
-  const today=new Date().toLocaleDateString('fr-BE');
+function PlanRow({it,pk,o,d,dateKey,canPrep,isCheckable}){
+  const [local,setLocal]=useState(false);
+  const fromDb=it.type==='mobility'?(d.mobility||[]).some(m=>m.date===dateKey&&m.done!==false):(d.activities||[]).some(a=>a.date===dateKey&&a.type===it.label&&a.done!==false);
+  const done=local||fromDb;
+  return<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0 0'}}>
+    <div style={{display:'flex',alignItems:'center',gap:8}}>
+      <span style={{fontSize:16}}>{it.icon}</span>
+      <span style={{fontSize:13,fontWeight:it.isMatch?700:500,color:it.isMatch?T.ac:done?T.gr:T.text,textDecoration:done?'line-through':'none'}}>{it.label}</span>
+    </div>
+    <div style={{display:'flex',alignItems:'center',gap:8}}>
+      {it.time&&<span style={{fontSize:11,color:T.tm}}>{it.time}</span>}
+      {canPrep&&<button onClick={()=>o(pk)} style={{background:T.ac,color:'#000',border:'none',borderRadius:6,padding:'4px 8px',fontSize:10,fontWeight:800}}>OBJ</button>}
+      {isCheckable&&!done&&<button onClick={async()=>{
+        try{
+          if(it.type==='mobility'){var r=await sb.from('mobility').upsert({date:dateKey,done:true},{onConflict:'date'});if(r.error)throw r.error;}
+          else{var r2=await sb.from('activities').upsert({date:dateKey,type:it.label,done:true},{onConflict:'date,type'});if(r2.error)throw r2.error;}
+          setLocal(true);d.reload();
+        }catch(e){alert("Erreur d'enregistrement, réessaie.");}
+      }} style={{background:T.ac,color:'#000',border:'none',borderRadius:6,padding:'4px 8px',fontSize:10,fontWeight:800}}>FAIT ✓</button>}
+      {isCheckable&&done&&<span style={{fontSize:12,color:T.gr,fontWeight:700}}>✓</span>}
+    </div>
+  </div>;
+}
 
+function PPlanning({o,d}){
+  var nx=nextMatchInfo();
+  var days=WS.map(function(tpl,di){
+    var dt=weekDate(di),key=dt.toLocaleDateString('fr-BE'),ds=ddmm(dt);
+    var match=SM.find(function(m){return m.date===ds+'/'+dt.getFullYear();});
+    var items=tpl.items.filter(function(x){return !x.isMatch&&!(match&&x.label.indexOf('Repos')===0);});
+    if(match)items=[{icon:'⚔️',label:'J'+match.n+' vs '+shortOpp(match.opp),time:match.time+' · '+match.loc,isMatch:true}].concat(items);
+    else if(tpl.day==='SAM'&&!items.length)items=tpl.items;
+    return{day:tpl.day,date:ds,key:key,items:items};
+  });
   return<div style={{padding:'8px 16px 20px'}}>
     <div className="display" style={{fontSize:32,padding:'8px 4px 20px'}}>MON <span style={{color:T.ac}}>PLANNING</span></div>
-    {WS.map((day,di)=><div key={di} className="cd" style={{padding:14,marginBottom:8,borderLeft:day.items.some(x=>x.isMatch)?`3px solid ${T.ac}`:`3px solid ${T.bs}`}}>
+    {days.map((day,di)=><div key={di} className="cd" style={{padding:14,marginBottom:8,borderLeft:day.items.some(x=>x.isMatch)?`3px solid ${T.ac}`:`3px solid ${T.bs}`}}>
       <div style={{display:'flex',alignItems:'flex-start',gap:14}}>
         <div style={{minWidth:46}}><div className="display" style={{fontSize:18,lineHeight:1}}>{day.day}</div><div style={{fontSize:11,color:T.tm,marginTop:2}}>{day.date}</div></div>
         <div style={{flex:1}}>
@@ -673,29 +666,12 @@ function PPlanning({o,d}){
             const canPrep=it.type==='team'||it.type==='gk';
             const pk=day.day==='LUN'?'tp-team':day.day==='MER'&&it.type==='gk'?'tp-gk':day.day==='MER'&&it.type==='team'?'tp-team-wed':'tp-thu';
             const isCheckable=it.type==='cv'||it.type==='mobility';
-            const [done,setDone]=useState(false);
-
-            return<div key={j} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:j>0?'8px 0 0':'0'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <span style={{fontSize:16}}>{it.icon}</span>
-                <span style={{fontSize:13,fontWeight:it.isMatch?700:500,color:it.isMatch?T.ac:done?T.gr:T.text,textDecoration:done?'line-through':'none'}}>{it.label}</span>
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                {it.time&&<span style={{fontSize:11,color:T.tm}}>{it.time}</span>}
-                {canPrep&&<button onClick={()=>o(pk)} style={{background:T.ac,color:'#000',border:'none',borderRadius:6,padding:'4px 8px',fontSize:10,fontWeight:800}}>OBJ</button>}
-                {isCheckable&&!done&&<button onClick={async()=>{
-                  if(it.type==='mobility') await API.addMobility(day.date+'/2026');
-                  else await API.logActivity(day.date+'/2026',it.label);
-                  setDone(true); d.reload();
-                }} style={{background:T.ac,color:'#000',border:'none',borderRadius:6,padding:'4px 8px',fontSize:10,fontWeight:800}}>FAIT ✓</button>}
-                {isCheckable&&done&&<span style={{fontSize:12,color:T.gr,fontWeight:700}}>✓</span>}
-              </div>
-            </div>;
+            return<PlanRow key={day.date+'-'+j+'-'+it.label} it={it} pk={pk} o={o} d={d} dateKey={day.key} canPrep={canPrep} isCheckable={isCheckable}/>;
           })}
         </div>
       </div>
     </div>)}
-    <button onClick={()=>o('match-prep')} className="bp" style={{width:'100%',padding:16,marginTop:16,borderRadius:12,fontSize:15}}>⚔️ Préparer J1</button>
+    {nx&&<button onClick={()=>o('match-prep')} className="bp" style={{width:'100%',padding:16,marginTop:16,borderRadius:12,fontSize:15}}>⚔️ Préparer J{nx.m.n} vs {shortOpp(nx.m.opp)}</button>}
   </div>;
 }
 
@@ -749,8 +725,8 @@ function MatchPrep({onClose,d}){
   const ok=emo&&nrg&&sel.length>0;
   return<MS onClose={onClose} title="⚔️ MATCH DAY">
     <div style={{padding:'20px 20px 100px'}}>
-      <div className="ey" style={{marginBottom:6}}>Dim 30/08 · 11:15 · EXT</div>
-      <div className="display" style={{fontSize:30,lineHeight:0.95}}>vs <span style={{color:T.ac}}>ACREN LESSINES</span></div>
+      {(function(){var nx=nextMatchInfo();var m=nx&&nx.m;return m?<div><div className="ey" style={{marginBottom:6}}>J{m.n} · {DAYN[m.day]} {m.date.slice(0,5)} · {m.time} · {m.loc}</div>
+      <div className="display" style={{fontSize:30,lineHeight:0.95}}>vs <span style={{color:T.ac}}>{shortOpp(m.opp).toUpperCase()}</span></div></div>:<div className="display" style={{fontSize:30}}>MATCH DAY</div>;})()}
       <div style={{height:1,background:T.bs,margin:'24px 0'}}/>
       <div className="ey" style={{marginBottom:12}}>Comment tu te sens ?</div>
       <div style={{display:'flex',gap:6,marginBottom:24}}>{[{v:1,e:'😟'},{v:2,e:'😐'},{v:3,e:'🙂'},{v:4,e:'😃'},{v:5,e:'🔥'}].map(em=><button key={em.v} onClick={()=>setEmo(em.v)} style={{flex:1,aspectRatio:'1',background:emo===em.v?T.ac:T.card,border:emo===em.v?'none':`1px solid ${T.bs}`,borderRadius:12,fontSize:28,padding:0}}>{em.e}</button>)}</div>
